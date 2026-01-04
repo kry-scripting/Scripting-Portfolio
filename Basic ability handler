@@ -1,0 +1,237 @@
+-- basic ability system (nothing special)
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+
+-- simple signal
+local Signal = {}
+Signal.__index = Signal
+
+function Signal.new()
+	return setmetatable({
+		_list = {}
+	}, Signal)
+end
+
+function Signal:Connect(fn)
+	table.insert(self._list, fn)
+	return {
+		Disconnect = function()
+			for i,v in ipairs(self._list) do
+				if v == fn then
+					table.remove(self._list, i)
+					break
+				end
+			end
+		end
+	}
+end
+
+function Signal:Fire(...)
+	for _, fn in ipairs(self._list) do
+		task.spawn(fn, ...)
+	end
+end
+
+-- basic random utility
+local Util = {}
+
+function Util.clamp(v, min, max)
+	if v < min then
+		return min
+	elseif v > max then
+		return max
+	end
+	return v
+end
+
+function Util.round(n)
+	return math.floor(n + 0.5)
+end
+
+function Util.getDelta(last)
+	return os.clock() - last
+end
+
+function Util.randomChance(percent)
+	return math.random(1,100) <= percent
+end
+
+-- ability class
+local Ability = {}
+Ability.__index = Ability
+
+function Ability.new(name, cooldown, exec)
+	return setmetatable({
+		Name = name,
+		Cooldown = cooldown,
+		LastUse = 0,
+		Execute = exec
+	}, Ability)
+end
+
+function Ability:IsReady()
+	return (os.clock() - self.LastUse) >= self.Cooldown
+end
+
+function Ability:Use(player)
+	if not self:IsReady() then
+		return false
+	end
+
+	self.LastUse = os.clock()
+
+	if self.Execute then
+		self.Execute(player)
+	end
+
+	return true
+end
+
+-- controller per player
+local Controller = {}
+Controller.__index = Controller
+
+function Controller.new(player)
+	return setmetatable({
+		Player = player,
+		Abilities = {},
+		AbilityUsed = Signal.new(),
+		State = {
+			Health = 100,
+			Energy = 50,
+			MaxEnergy = 50,
+			LastRegen = 0
+		}
+	}, Controller)
+end
+
+function Controller:AddAbility(ability)
+	self.Abilities[ability.Name] = ability
+end
+
+function Controller:Use(name)
+	local ab = self.Abilities[name]
+	if not ab then
+		return false
+	end
+
+	local ok = ab:Use(self.Player)
+	if ok then
+		self.AbilityUsed:Fire(self.Player, name)
+	end
+
+	return ok
+end
+
+-- stat operations
+function Controller:SetHealth(val)
+	self.State.Health = Util.clamp(val, 0, 100)
+end
+
+function Controller:AddHealth(val)
+	self.State.Health = Util.clamp(self.State.Health + val, 0, 100)
+end
+
+function Controller:SetEnergy(val)
+	self.State.Energy = Util.clamp(val, 0, self.State.MaxEnergy)
+end
+
+function Controller:AddEnergy(val)
+	self.State.Energy = Util.clamp(self.State.Energy + val, 0, self.State.MaxEnergy)
+end
+
+-- regen logic
+function Controller:UpdateRegen()
+	local now = os.clock()
+	if now - self.State.LastRegen >= 1 then
+		self:AddEnergy(1)
+		self.State.LastRegen = now
+	end
+end
+
+-- small debug function
+function Controller:DebugPrint()
+	-- not always used, but left it :)
+	print(self.Player.Name, self.State.Health, self.State.Energy)
+end
+
+-- ability creation
+local function createDefaultAbilities(ctrl)
+	ctrl:AddAbility(
+		Ability.new("Dash", 3, function(plr)
+			print(plr.Name, "dash")
+		end)
+	)
+
+	ctrl:AddAbility(
+		Ability.new("Heal", 5, function(plr)
+			ctrl:AddHealth(10)
+			print(plr.Name, "heal")
+		end)
+	)
+
+	ctrl:AddAbility(
+		Ability.new("Burst", 8, function(plr)
+			if Util.randomChance(40) then
+				print(plr.Name, "burst crit")
+			else
+				print(plr.Name, "burst")
+			end
+		end)
+	)
+end
+
+-- player handling
+local controllers = {}
+
+local function setup(p)
+	local c = Controller.new(p)
+	createDefaultAbilities(c)
+
+	c.AbilityUsed:Connect(function(pl, ability)
+		print("used:", pl.Name, ability)
+	end)
+
+	controllers[p] = c
+end
+
+local function remove(p)
+	controllers[p] = nil
+end
+
+Players.PlayerAdded:Connect(setup)
+Players.PlayerRemoving:Connect(remove)
+
+for _, pl in ipairs(Players:GetPlayers()) do
+	setup(pl)
+end
+
+-- random usage tests
+local tickCounter = 0
+
+RunService.Heartbeat:Connect(function(dt)
+	tickCounter += 1
+
+	for pl, ctrl in pairs(controllers) do
+		ctrl:UpdateRegen()
+
+		if tickCounter % 240 == 0 then
+			ctrl:DebugPrint()
+		end
+
+		if math.random(1, 700) == 1 then
+			ctrl:Use("Dash")
+		end
+
+		if math.random(1, 1500) == 1 then
+			ctrl:Use("Heal")
+		end
+
+		if math.random(1, 2000) == 1 then
+			ctrl:Use("Burst")
+		end
+	end
+end)
+
+return Controller
